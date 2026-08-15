@@ -1,0 +1,19 @@
+# secrets / credentials
+*.env
+.env.*
+**/.cloudflared/
+**/*credentials*.json
+
+# data (never commit raw datasets)
+*.csv
+*.zip
+data/
+data_generation/output/
+
+# OS / editor junk
+.DS_Store
+__pycache__/
+*.pyc
+.vscode/
+legacy_source/load_scripts/upload_log*.txt
+legacy_source/load_scripts/upload_log*.txt

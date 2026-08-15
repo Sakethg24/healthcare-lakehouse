@@ -1,0 +1,79 @@
+# =============================================================================
+# Meridian Health -- simulated legacy system
+#
+# Two services standing in for the two halves of the legacy estate:
+#   - postgres: the OLTP claims DB (legacy_claims_db), auto-seeded on first
+#     boot from init/schema.sql via Postgres's docker-entrypoint-initdb.d
+#     convention.
+#   - minio: the legacy on-prem file share (S3-compatible), holding the
+#     FHIR/C-CDA exports and NIH chest X-ray images. A one-shot init
+#     container creates the bucket automatically so there's no manual
+#     console step before load scripts can run.
+#
+# Run:  cd legacy_source && docker compose up -d
+# Stop: docker compose down            (data persists in named volumes)
+# Wipe: docker compose down -v         (deletes all data, re-seeds from
+#                                        scratch on next `up`)
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: meridian-legacy-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: legacy_claims_db
+      POSTGRES_USER: ${POSTGRES_USER:-meridian_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme_local_only}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meridian_admin} -d legacy_claims_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: meridian-legacy-fileshare
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-meridian_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-changeme_local_only}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console -- http://localhost:9001
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: waits for MinIO, creates the legacy-fileshare bucket, then exits.
+  # Keeps bucket creation out of manual/console steps, matching the rest of
+  # the project's "no manual clicking required" setup philosophy.
+  minio-init:
+    image: minio/mc:latest
+    container_name: meridian-legacy-fileshare-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-meridian_admin} ${MINIO_ROOT_PASSWORD:-changeme_local_only} &&
+      mc mb --ignore-existing local/legacy-fileshare &&
+      mc mb --ignore-existing local/legacy-fileshare/fhir &&
+      mc mb --ignore-existing local/legacy-fileshare/ccda &&
+      mc mb --ignore-existing local/legacy-fileshare/images &&
+      echo 'legacy-fileshare bucket ready.'
+      "
+
+volumes:
+  pgdata:
+  miniodata:
